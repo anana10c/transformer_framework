@@ -21,7 +21,7 @@ class base_config:
     seed: int = 2023
     verbose: bool = True  # how much info to show...
     # how many mini batches to time with
-    total_steps_to_run: int = 8
+    total_steps_to_run: int = None
     # ignores warmup steps for avg time calcs
     warmup_steps: int = 5
 
@@ -54,7 +54,7 @@ class base_config:
     use_tp = False
 
     # optimizer config
-    optimizer: str = "dadapt_adanip"  # [AdamW, AnyPrecision, dadapt_adam, dadapt_adanip, int8] (fp32, bf16, int8 optimizers)
+    optimizer: str = "AdamW"  # [AdamW, AnyPrecision, dadapt_adam, dadapt_adanip, int8] (fp32, bf16, int8 optimizers)
     use_fused_optimizer = True  # relevant only for AdamW atm
 
     ap_momentum_dtype = torch.float32  # momentum and variance

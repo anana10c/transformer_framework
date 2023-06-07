@@ -274,7 +274,7 @@ def train(
                 f"step: {batch_index-1}: time taken for the last {cfg.log_every} steps is {mini_batch_time}, loss is {loss}"
             )
 
-        if batch_index > total_steps_to_run:
+        if total_steps_to_run is not None and batch_index > total_steps_to_run:
             break
     if local_rank == 0:
         inner_pbar.close()

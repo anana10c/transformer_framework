@@ -255,11 +255,12 @@ def fsdp_main():
         memmax.stop()  # stop and display info
 
         stable_sum = sum(tracking_duration[1:])
-        stable_avg = stable_sum / cfg.total_steps_to_run
+        total_steps_measured = len(tracking_duration) if cfg.total_steps_to_run is None else cfg.total_steps_to_run
+        stable_avg = stable_sum / total_steps_measured
         stable_avg = round(stable_avg, 4)
         print(
             Fore.GREEN
-            + f"\n--> Step avg speed based on {cfg.total_steps_to_run} steps: {stable_avg} seconds"
+            + f"\n--> Step avg speed based on {total_steps_measured} steps: {stable_avg} seconds"
         )
         print(Fore.LIGHTBLUE_EX + f"\n--> Model Size =  {num_params} M Params")
         print(f"\nCUDA Memory Summary After Training:\n {torch.cuda.memory_summary()}")

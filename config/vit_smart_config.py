@@ -33,7 +33,7 @@ class train_config(base_config):
 
     # Framework to run - DDP or FSDP.
     # DDP = False means using FSDP.
-    use_ddp: bool = False
+    use_ddp: bool = True
     ddp_bucket_size: float = 25
     ddp_use_gradient_view: bool = False
 
@@ -126,7 +126,7 @@ class train_config(base_config):
     layernorm_eps = 1e-6
 
     # optimizers load and save
-    optimizer = "AdamW"  # "dadapt_adanip"
+    optimizer = "shampoo"
 
     save_optimizer: bool = False
     load_optimizer: bool = False

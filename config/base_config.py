@@ -54,8 +54,8 @@ class base_config:
     use_tp = False
 
     # optimizer config
-    optimizer: str = "AdamW"  # [AdamW, AnyPrecision, dadapt_adam, dadapt_adanip, int8] (fp32, bf16, int8 optimizers)
-    use_fused_optimizer = True  # relevant only for AdamW atm
+    # optimizer: str = "AdamW"  # [AdamW, AnyPrecision, dadapt_adam, dadapt_adanip, int8] (fp32, bf16, int8 optimizers)
+    # use_fused_optimizer = True  # relevant only for AdamW atm
 
     ap_momentum_dtype = torch.float32  # momentum and variance
     ap_variance_dtype = torch.float32  # variance

@@ -673,6 +673,27 @@ def fsdp_main():
             print(
                 f"Running with AdamW optimizer, with fusion set to {use_fused_optimizer}"
             )
+    elif cfg.optimizer == "shampoo":
+        from distributed_shampoo.distributed_shampoo import DistributedShampoo
+        from distributed_shampoo.shampoo_utils import GraftingType
+
+        optimizer = DistributedShampoo(
+            model.parameters(),
+            lr=0.0005,
+            betas=(0.9, 0.999),
+            epsilon=1e-12,
+            weight_decay=weight_decay,
+            max_preconditioner_dim=8192,
+            precondition_frequency=1,
+            use_decoupled_weight_decay=True,
+            grafting_type=GraftingType.ADAM,
+            grafting_epsilon=1e-08,
+            grafting_beta2=0.999,
+        )
+        if rank == 0:
+            print(
+                f"Running with DDP Shampoo optimizer"
+            )
 
     # optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 

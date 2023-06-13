@@ -29,11 +29,11 @@ class train_config(base_config):
     # training - set total_steps = None to run epochs,
     #  otherwise step count is used and breaks.
     total_steps_to_run: int = None
-    num_epochs: int = 4
+    num_epochs: int = 2
 
     # Framework to run - DDP or FSDP.
     # DDP = False means using FSDP.
-    use_ddp: bool = True
+    use_ddp: bool = False
     ddp_bucket_size: float = 25
     ddp_use_gradient_view: bool = False
 
@@ -59,8 +59,8 @@ class train_config(base_config):
     use_fused_attention: bool = True
 
     # profile
-    run_profiler: bool = False
-    profile_folder: str = "tp_fsdp/profile_tracing"
+    run_profiler: bool = True
+    profile_folder: str = "fsdp/profile_tracing"
 
     # use deferred init
     use_deferred_init: bool = False
@@ -76,7 +76,7 @@ class train_config(base_config):
     run_validation: bool = True
     val_batch_size = 32
 
-    fsdp_activation_checkpointing: bool = True
+    fsdp_activation_checkpointing: bool = False
 
     # use synthetic data
     use_synthetic_data: bool = False
@@ -126,7 +126,7 @@ class train_config(base_config):
     layernorm_eps = 1e-6
 
     # optimizers load and save
-    optimizer = "shampoo"
+    optimizer = "fsdp_shampoo"
 
     save_optimizer: bool = False
     load_optimizer: bool = False
@@ -383,6 +383,9 @@ def train(
 
         if torch_profiler is not None:
             torch_profiler.step()
+            print(f"profiler on step {torch_profiler.step_num}")
+        else:
+            print("profiler is None")
         if total_steps_to_run is not None and batch_index > total_steps_to_run:
             break
 

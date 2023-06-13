@@ -522,6 +522,7 @@ def fsdp_main():
             model,
             process_group=process_group_fsdp,
             auto_wrap_policy=my_auto_wrap_policy,
+            use_orig_params=True,
             mixed_precision=mp_policy,
             backward_prefetch=prefetch_policy,
             sharding_strategy=cfg.sharding_strategy,
@@ -673,7 +674,7 @@ def fsdp_main():
             print(
                 f"Running with AdamW optimizer, with fusion set to {use_fused_optimizer}"
             )
-    elif cfg.optimizer == "shampoo":
+    elif cfg.optimizer == "ddp_shampoo":
         from distributed_shampoo.distributed_shampoo import DistributedShampoo
         from distributed_shampoo.shampoo_utils import GraftingType
 
@@ -683,17 +684,46 @@ def fsdp_main():
             betas=(0.9, 0.999),
             epsilon=1e-12,
             weight_decay=weight_decay,
-            max_preconditioner_dim=8192,
+            max_preconditioner_dim=256,
             precondition_frequency=1,
             use_decoupled_weight_decay=True,
             grafting_type=GraftingType.ADAM,
             grafting_epsilon=1e-08,
             grafting_beta2=0.999,
+            num_trainers_per_group=1,
+            # use_dtensor=False,
         )
         if rank == 0:
             print(
                 f"Running with DDP Shampoo optimizer"
             )
+            if not cfg.use_ddp:
+                print(f"WARNING! using DDP Shampoo with FSDP!")
+    elif cfg.optimizer == "fsdp_shampoo":
+        from distributed_shampoo.fsdp_shampoo import FSDPShampoo
+        from distributed_shampoo.shampoo_utils import GraftingType
+
+        optimizer = FSDPShampoo(
+            model.parameters(),
+            lr=0.0005,
+            betas=(0.9, 0.999),
+            epsilon=1e-12,
+            weight_decay=weight_decay,
+            max_preconditioner_dim=256,
+            precondition_frequency=100,
+            use_decoupled_weight_decay=True,
+            grafting_type=GraftingType.ADAM,
+            grafting_epsilon=1e-08,
+            grafting_beta2=0.999,
+            # num_trainers_per_group=1,
+            use_dtensor=False,
+        )
+        if rank == 0:
+            print(
+                f"Running with FSDP Shampoo optimizer"
+            )
+            if cfg.use_ddp:
+                print(f"WARNING! using FSDP Shampoo with DDP!")
 
     # optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
@@ -731,7 +761,7 @@ def fsdp_main():
                     torch.profiler.ProfilerActivity.CPU,
                     torch.profiler.ProfilerActivity.CUDA,
                 ],
-                schedule=torch.profiler.schedule(wait=1, warmup=2, active=3, repeat=1),
+                # schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1),
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
                     cfg.profile_folder
                 ),
@@ -748,6 +778,12 @@ def fsdp_main():
         print(f"Profiling active.  Traces will be saved at {cfg.profile_folder}")
 
     with maybe_run_profiler(cfg):
+        if torch_profiler is None:
+            print("torch_profiler is None in the beginning of training?")
+        if cfg.run_profiler:
+            print("profiler is on")
+        else:
+            print("profiler is off")
         for i in range(cfg.num_epochs):
             if rank == 0:
                 print(f"Epoch: {i} starting...")

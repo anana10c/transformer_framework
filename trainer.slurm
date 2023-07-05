@@ -10,6 +10,8 @@
 
 #SBATCH --cpus-per-task=96
 
+#SBATCH --exclude=a100-st-p4d24xlarge-6,a100-st-p4d24xlarge-7,a100-st-p4d24xlarge-48,a100-st-p4d24xlarge-16,a100-st-p4d24xlarge-5,a100-st-p4d24xlarge-8,a100-st-p4d24xlarge-46,a100-st-p4d24xlarge-47,a100-st-p4d24xlarge-29,a100-st-p4d24xlarge-30
+
 
 nodes=( $( scontrol show hostnames $SLURM_JOB_NODELIST ) )
 nodes_array=($nodes)
@@ -25,7 +27,7 @@ export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 
 # debugging flags (optional)
-export NCCL_DEBUG=WARN
+export NCCL_DEBUG=INFO
 export NCCL_DEBUG_SUBSYS=WARN
 export PYTHONFAULTHANDLER=1
 
@@ -37,5 +39,5 @@ export CUDA_LAUNCH_BLOCKING=0
 # set the network interface
 export NCCL_SOCKET_IFNAME="eth0,en,eth,em,bond"
 dcgmi profile --pause
-srun torchrun --nnodes 2 --nproc_per_node 8 --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$head_node_ip:29500" ./main_training.py
+srun torchrun --nnodes 2 --nproc_per_node 8 --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$head_node_ip:29500" ./main_training.py --model vitsmart
 dcgmi profile --resume

@@ -1,7 +1,7 @@
 import argparse
 import os
 import time
-
+from typing import Dict, Tuple
 
 import colorama
 import torch
@@ -185,6 +185,9 @@ def fsdp_main():
 
     torch.cuda.manual_seed(cfg.seed + local_rank)
     torch.manual_seed(cfg.seed + local_rank)
+    # torch.cuda.manual_seed(cfg.seed)
+    # torch.manual_seed(cfg.seed)
+    # torch.use_deterministic_algorithms(True)
 
     if rank == 0:
         print(f"--> World Size = {world_size}\n")
@@ -530,6 +533,7 @@ def fsdp_main():
             forward_prefetch=cfg.forward_prefetch,
             limit_all_gathers=False,
             param_init_fn=my_init_fn,
+            # sync_module_states=True
         )
     print_memory_summary("vit", "cuda")
 
@@ -603,6 +607,29 @@ def fsdp_main():
         print("Finish warm up")
     model.zero_grad()
     """
+
+    # param metadata
+    param_to_metadata: Dict[nn.Parameter, Tuple] = {}
+    for fsdp_module in FSDP.fsdp_modules(model):
+        for handle in fsdp_module._handles:
+            fqns = handle.flat_param._fqns
+            shapes = handle.flat_param._shapes
+            numels = handle.flat_param._numels
+            shard_param_infos = handle.flat_param._shard_param_infos
+            params = handle.flat_param._params
+            for param, fqn, shape, numel, shard_param_info in zip(
+                params, fqns, shapes, numels, shard_param_infos
+            ):
+                param_to_metadata[param] = (
+                    fqn, shape, numel, shard_param_info
+                )
+    #             if shard_param_info.in_shard:
+    #                 print(f"rank {dist.get_rank()} {fqn}: {shape} {numel} {shard_param_info}")
+    # num_params = 0
+    # for param_name, param in model.named_parameters():
+    #     num_params += 1
+    #     assert param in param_to_metadata, f"{param_name} missing"
+    # assert num_params == len(param_to_metadata), f"{num_params} vs. {len(param_to_metadata)}"
 
     # optimizer ----------
     optimizer = None
@@ -684,14 +711,16 @@ def fsdp_main():
             betas=(0.9, 0.999),
             epsilon=1e-12,
             weight_decay=weight_decay,
-            max_preconditioner_dim=256,
+            max_preconditioner_dim=1024,
+            # start_preconditioning_step=100,
             precondition_frequency=1,
             use_decoupled_weight_decay=True,
             grafting_type=GraftingType.ADAM,
             grafting_epsilon=1e-08,
             grafting_beta2=0.999,
-            num_trainers_per_group=1,
-            # use_dtensor=False,
+            # num_trainers_per_group=1,
+            use_dtensor=False,
+            # debug_mode=True
         )
         if rank == 0:
             print(
@@ -701,22 +730,25 @@ def fsdp_main():
                 print(f"WARNING! using DDP Shampoo with FSDP!")
     elif cfg.optimizer == "fsdp_shampoo":
         from distributed_shampoo.fsdp_shampoo import FSDPShampoo
-        from distributed_shampoo.shampoo_utils import GraftingType
+        from distributed_shampoo.shampoo_utils import GraftingType, LargeDimMethod
 
         optimizer = FSDPShampoo(
             model.parameters(),
+            param_to_metadata,
             lr=0.0005,
             betas=(0.9, 0.999),
             epsilon=1e-12,
             weight_decay=weight_decay,
-            max_preconditioner_dim=256,
-            precondition_frequency=100,
+            max_preconditioner_dim=1024,
+            # start_preconditioning_step=100,
+            precondition_frequency=1,
             use_decoupled_weight_decay=True,
             grafting_type=GraftingType.ADAM,
             grafting_epsilon=1e-08,
             grafting_beta2=0.999,
             # num_trainers_per_group=1,
             use_dtensor=False,
+            # debug_mode=True
         )
         if rank == 0:
             print(
@@ -761,7 +793,7 @@ def fsdp_main():
                     torch.profiler.ProfilerActivity.CPU,
                     torch.profiler.ProfilerActivity.CUDA,
                 ],
-                # schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1),
+                schedule=torch.profiler.schedule(wait=0, warmup=1, active=1, repeat=1),
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
                     cfg.profile_folder
                 ),
@@ -777,13 +809,7 @@ def fsdp_main():
     if cfg.run_profiler:
         print(f"Profiling active.  Traces will be saved at {cfg.profile_folder}")
 
-    with maybe_run_profiler(cfg):
-        if torch_profiler is None:
-            print("torch_profiler is None in the beginning of training?")
-        if cfg.run_profiler:
-            print("profiler is on")
-        else:
-            print("profiler is off")
+    with maybe_run_profiler(cfg) as torch_profiler:
         for i in range(cfg.num_epochs):
             if rank == 0:
                 print(f"Epoch: {i} starting...")

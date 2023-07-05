@@ -31,4 +31,5 @@ fp32_policy = MixedPrecision(
     param_dtype=torch.float32,
     reduce_dtype=torch.float32,
     buffer_dtype=torch.float32,
+    cast_root_forward_inputs=False
 )

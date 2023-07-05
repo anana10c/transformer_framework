@@ -29,7 +29,7 @@ class train_config(base_config):
     # training - set total_steps = None to run epochs,
     #  otherwise step count is used and breaks.
     total_steps_to_run: int = None
-    num_epochs: int = 2
+    num_epochs: int = 1
 
     # Framework to run - DDP or FSDP.
     # DDP = False means using FSDP.
@@ -41,8 +41,8 @@ class train_config(base_config):
         # "vit_relpos_medium_patch16_rpn_224"  #
         # "vit_relpos_base_patch16_rpn_224"
         # "maxxvitv2_rmlp_base_rw_224"
-        "smartvit90"
-        # "631M"
+        # "smartvit90"
+        "631M"
         # "1B"
         # "1.8B"
         # "4B"
@@ -59,7 +59,7 @@ class train_config(base_config):
     use_fused_attention: bool = True
 
     # profile
-    run_profiler: bool = True
+    run_profiler: bool = False
     profile_folder: str = "fsdp/profile_tracing"
 
     # use deferred init
@@ -104,8 +104,8 @@ class train_config(base_config):
     # train_data_path = "datasets_vision/pets/train"
     # val_data_path = "datasets_vision/pets/val"
 
-    # mixed precision
-    use_mixed_precision: bool = True
+    # # mixed precision
+    # use_mixed_precision: bool = False
 
     # checkpoint models
     save_model_checkpoint: bool = False
@@ -127,6 +127,7 @@ class train_config(base_config):
 
     # optimizers load and save
     optimizer = "fsdp_shampoo"
+    use_fused_optimizer = True
 
     save_optimizer: bool = False
     load_optimizer: bool = False
@@ -346,6 +347,10 @@ def train(
             inputs = batch["pixel_values"]
             targets = batch["labels"]
 
+        # torch.save(list(model.parameters()), f"debug_save/ddp_rank{dist.get_rank()}_batch{batch_index}.pt")
+        # print(f"saved ddp_rank{dist.get_rank()}_batch{batch_index}.pt")
+        # print(f"rank {dist.get_rank()} batch idx {batch_index} inputs {inputs[:, 0, 0, 0]} targets {targets}")
+
         inputs, targets = inputs.to(torch.cuda.current_device()), torch.squeeze(
             targets.to(torch.cuda.current_device()), -1
         )
@@ -384,8 +389,7 @@ def train(
         if torch_profiler is not None:
             torch_profiler.step()
             print(f"profiler on step {torch_profiler.step_num}")
-        else:
-            print("profiler is None")
+
         if total_steps_to_run is not None and batch_index > total_steps_to_run:
             break
 

@@ -26,7 +26,7 @@ class base_config:
     warmup_steps: int = 5
 
     # DDP
-    use_ddp: bool = True
+    use_ddp: bool = False
     ddp_bucket_size: float = 25
     ddp_use_gradient_view: bool = False
 
@@ -40,12 +40,13 @@ class base_config:
     model_weights_bf16: bool = False  # warning, True will  move model weights to BF16...use BFF_AdamW optimizer
 
     # policies
-    use_mixed_precision: bool = True
-    mp_policy = policies.bf16_policy
+    use_mixed_precision: bool = False
+    # mp_policy = policies.bf16_policy
+    mp_policy = None
 
     use_low_precision_gradient_policy: bool = False
     # this is only for fp32 scenario...
-    use_tf32: bool = True
+    use_tf32: bool = False
 
     label_smoothing_value = 0.0  # default to none, adjust in model config
 
@@ -66,7 +67,7 @@ class base_config:
     sharding_strategy: ShardingStrategy = ShardingStrategy.FULL_SHARD
     print_sharding_plan: bool = False
 
-    run_profiler: bool = True
+    run_profiler: bool = False
     profile_folder: str = "fsdp/profile_tracing"
 
     # disable forward_prefetch since it currently doesn't work with activation

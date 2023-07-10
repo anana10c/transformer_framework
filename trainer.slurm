@@ -32,12 +32,13 @@ export NCCL_DEBUG_SUBSYS=WARN
 export PYTHONFAULTHANDLER=1
 
 export LD_LIBRARY_PATH=/opt/amazon/efa/lib:$LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/usr/local/lib/:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/data/home/mingzhe0908/cluster/aws-ofi-nccl/lib:$LD_LIBRARY_PATH
 export CUDA_LAUNCH_BLOCKING=0
 
 # on your cluster you might need these:
 # set the network interface
 export NCCL_SOCKET_IFNAME="eth0,en,eth,em,bond"
+export FI_EFA_USE_DEVICE_RDMA=1
 dcgmi profile --pause
 srun torchrun --nnodes 2 --nproc_per_node 8 --rdzv_id 101 --rdzv_backend c10d --rdzv_endpoint "$head_node_ip:29500" ./main_training.py --model vitsmart
 dcgmi profile --resume

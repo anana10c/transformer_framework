@@ -29,7 +29,7 @@ class train_config(base_config):
     # training - set total_steps = None to run epochs,
     #  otherwise step count is used and breaks.
     total_steps_to_run: int = None
-    num_epochs: int = 1
+    num_epochs: int = 300
 
     # Framework to run - DDP or FSDP.
     # DDP = False means using FSDP.
@@ -41,8 +41,8 @@ class train_config(base_config):
         # "vit_relpos_medium_patch16_rpn_224"  #
         # "vit_relpos_base_patch16_rpn_224"
         # "maxxvitv2_rmlp_base_rw_224"
-        # "smartvit90"
-        "631M"
+        "smartvit90"
+        # "631M"
         # "1B"
         # "1.8B"
         # "4B"
@@ -71,7 +71,7 @@ class train_config(base_config):
     # image size
     image_size: int = 224
 
-    batch_size_training: int = 40
+    batch_size_training: int = 128
     # validation
     run_validation: bool = True
     val_batch_size = 32
@@ -86,7 +86,7 @@ class train_config(base_config):
     if use_pokemon_dataset:
         NUM_CLASSES = 150
 
-    use_beans_dataset: bool = True
+    use_beans_dataset: bool = False
     if use_beans_dataset:
         NUM_CLASSES = 3
         print("dataset num classes = 3")
@@ -96,6 +96,10 @@ class train_config(base_config):
     if use_food:
         NUM_CLASSES = 101
         use_label_singular = False
+    
+    use_imagenet = True
+    if use_imagenet:
+        NUM_CLASSES = 1000
 
     # real dset
     num_categories = NUM_CLASSES
@@ -126,7 +130,7 @@ class train_config(base_config):
     layernorm_eps = 1e-6
 
     # optimizers load and save
-    optimizer = "fsdp_shampoo"
+    optimizer = "AdamW"
     use_fused_optimizer = True
 
     save_optimizer: bool = False
@@ -288,10 +292,34 @@ def get_pokemon_dataset():
     return get_datasets()
 
 
-def get_universal_dataset():
+def get_universal_dataset(dataset_path=None):
     from dataset_classes.hf_universal import get_datasets
 
-    return get_datasets()
+    return get_datasets(dataset_path=dataset_path)
+
+
+def get_imagenet_dataset():
+    path = "/datasets01/imagenet_full_size/061417/"
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                     std=[0.229, 0.224, 0.225])
+
+    train_dataset = torchvision.datasets.ImageFolder(path + "train", 
+                                                     transforms.Compose([
+                                                        transforms.RandomResizedCrop(224),
+                                                        transforms.RandomHorizontalFlip(),
+                                                        transforms.RandAugment(2, 10),
+                                                        transforms.ToTensor(),
+                                                        normalize,
+                                                    ]))
+    val_dataset = torchvision.datasets.ImageFolder(path + "val",
+                                                   transforms.Compose([
+                                                        transforms.Resize(256),
+                                                        transforms.CenterCrop(224),
+                                                        transforms.ToTensor(),
+                                                        normalize,
+                                                    ]))
+
+    return train_dataset, val_dataset
 
 
 def get_policy():
@@ -339,13 +367,14 @@ def train(
         # print(f"{batch=}")
         if use_synthetic_data:
             inputs, targets = batch
-        elif use_label_singular:
-            inputs = batch["pixel_values"]
-            targets = batch["label"]
-
+        # elif use_label_singular:
+        #     inputs = batch["pixel_values"]
+        #     targets = batch["label"]
+        # else:
+        #     inputs = batch["pixel_values"]
+        #     targets = batch["labels"]
         else:
-            inputs = batch["pixel_values"]
-            targets = batch["labels"]
+            inputs, targets = batch
 
         # torch.save(list(model.parameters()), f"debug_save/ddp_rank{dist.get_rank()}_batch{batch_index}.pt")
         # print(f"saved ddp_rank{dist.get_rank()}_batch{batch_index}.pt")
@@ -364,6 +393,8 @@ def train(
         loss.backward()
         mini_batch_time = time.perf_counter() - t0
 
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
         if optimizer:
             optimizer.step()
         if lr_scheduler:
@@ -373,18 +404,19 @@ def train(
 
         # update durations and memory tracking
         if stats:
-            stats["training_loss"].append(loss)
+            stats["training_loss"].append(loss.item())
             stats["training_iter_time"].append(mini_batch_time)
+            stats["training_iter_time_opt"].append(total_batch_time)
 
         if local_rank == 0:
             tracking_duration.append(mini_batch_time)
             if memmax:
                 memmax.update()
 
-        if batch_index % cfg.log_every == 0 and torch.distributed.get_rank() == 0:
-            print(
-                f"step: {batch_index}: time taken for the last {cfg.log_every} steps is {mini_batch_time:.4f}, including opt {total_batch_time:4f}, loss is {loss}"
-            )
+        # if batch_index % cfg.log_every == 0 and torch.distributed.get_rank() == 0:
+        #     print(
+        #         f"step: {batch_index}: time taken for the last {cfg.log_every} steps is {mini_batch_time:.4f}, including opt {total_batch_time:4f}, loss is {loss}"
+        #     )
 
         if torch_profiler is not None:
             torch_profiler.step()
@@ -417,12 +449,13 @@ def validation(
 
     with torch.no_grad():
         for batch_idx, (batch) in enumerate(val_loader):
-            if use_label_singular:
-                inputs = batch["pixel_values"]
-                targets = batch["label"]
-            else:
-                inputs = batch["pixel_values"]
-                targets = batch["labels"]
+            # if use_label_singular:
+            #     inputs = batch["pixel_values"]
+            #     targets = batch["label"]
+            # else:
+            #     inputs = batch["pixel_values"]
+            #     targets = batch["labels"]
+            inputs, targets = batch
 
             inputs, targets = inputs.to(torch.cuda.current_device()), targets.to(
                 torch.cuda.current_device()
@@ -450,10 +483,12 @@ def validation(
         print(f"val_loss : {epoch_val_loss:.4f} :  val_acc: {epoch_val_accuracy:.4f}\n")
         if stats is not None:
             print(f"updating stats...")
-            loss = f"{epoch_val_loss:.4f}"
-            acc = f"{epoch_val_accuracy:.4f}"
-            float_acc = float(acc)
-            stats["best_accuracy"] = max(float_acc, stats["best_accuracy"])
+            # loss = f"{epoch_val_loss:.4f}"
+            # acc = f"{epoch_val_accuracy:.4f}"
+            # float_acc = float(acc)
+            loss = loss.item()
+            acc = acc.item()
+            stats["best_accuracy"] = max(acc, stats["best_accuracy"])
             best_acc = stats["best_accuracy"]
             stats["loss"].append(loss)
             stats["accuracy"].append(acc)

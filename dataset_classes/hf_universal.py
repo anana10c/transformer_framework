@@ -71,7 +71,7 @@ def get_datasets(dataset_path=None):
     if dataset_path is None:
         ds = load_dataset("food101", name="full")
     else:
-        ds = load_dataset(dataset_path)
+        ds = load_dataset(dataset_path, nproc=8)
 
     ds_train = ds["train"]
     ds_validation = ds["validation"]

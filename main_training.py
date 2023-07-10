@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import time
 from typing import Dict, Tuple
@@ -219,16 +220,19 @@ def fsdp_main():
     use_pokemon = False
     use_beans = False
     use_food = False
+    use_imagenet = False
     use_label_singular = False
     # todo - clean this up...temp bridge for testing pokemon dataset
     if cfg.use_synthetic_data == False:
         use_pokemon = False
         use_beans = False
         use_food = False
+        use_imagenet = False
     try:
         use_pokemon = cfg.use_pokemon_dataset
         use_beans = cfg.use_beans_dataset
         use_food = cfg.use_food
+        use_imagenet = cfg.use_imagenet
     except:
         print(f"pokemon nor beans set not enabled")
         pass
@@ -239,16 +243,19 @@ def fsdp_main():
         dataset, val_dataset = config.get_pokemon_dataset()
 
     elif use_beans:
-        assert not use_food and not use_pokemon, f"multiple datasets enabled."
+        assert not use_food and not use_pokemon and not use_imagenet, f"multiple datasets enabled."
         dataset, val_dataset = config.get_beans_dataset()
     elif use_food:
-        assert not use_beans and not use_pokemon, f"multiple datasets enabled."
+        assert not use_beans and not use_pokemon and not use_imagenet, f"multiple datasets enabled."
         dataset, val_dataset = config.get_universal_dataset()
         use_label_singular = True
+    elif use_imagenet:
+        assert not use_beans and not use_pokemon and not use_food, f"multiple datasets enabled."
+        dataset, val_dataset = config.get_imagenet_dataset()
     else:
         dataset = config.get_dataset()
 
-    if use_beans or use_pokemon or use_food:
+    if use_beans or use_pokemon or use_food or use_imagenet:
         if rank == 0:
             import collections
 
@@ -633,8 +640,8 @@ def fsdp_main():
 
     # optimizer ----------
     optimizer = None
-    lr = 9e-4
-    weight_decay = 0.002
+    lr = 1e-3
+    weight_decay = 1e-4
 
     if cfg.optimizer == "int8":
         import bitsandbytes as bnb
@@ -693,7 +700,7 @@ def fsdp_main():
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
-            lr=0.0005,
+            lr=lr,
             weight_decay=weight_decay,
             fused=use_fused_optimizer,
         )
@@ -707,7 +714,7 @@ def fsdp_main():
 
         optimizer = DistributedShampoo(
             model.parameters(),
-            lr=0.0005,
+            lr=lr,
             betas=(0.9, 0.999),
             epsilon=1e-12,
             weight_decay=weight_decay,
@@ -735,7 +742,7 @@ def fsdp_main():
         optimizer = FSDPShampoo(
             model.parameters(),
             param_to_metadata,
-            lr=0.0005,
+            lr=lr,
             betas=(0.9, 0.999),
             epsilon=1e-12,
             weight_decay=weight_decay,
@@ -760,9 +767,12 @@ def fsdp_main():
     # optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
     # linear warmup
-    from torch.optim.lr_scheduler import LinearLR
+    from torch.optim.lr_scheduler import LinearLR, SequentialLR, ConstantLR, CosineAnnealingLR
 
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, total_iters=50)
+    # warmup_scheduler = LinearLR(optimizer, start_factor=0.1, total_iters=50)
+    warmup_scheduler = ConstantLR(optimizer, factor=1.0, total_iters=10000)
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=375341)
+    scheduler = SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], milestones=[10000])
     # (optimizer, start_factor=0.3333333333333333, end_factor=1.0, total_iters=5, last_epoch=- 1, verbose=False)
 
     # start adding in logged metrics...
@@ -799,7 +809,7 @@ def fsdp_main():
                 ),
                 profile_memory=True,
                 with_stack=False,
-                record_shapes=True,
+                record_shapes=False,
             ) as torch_profiler:
                 yield torch_profiler
         else:
@@ -827,10 +837,10 @@ def fsdp_main():
                 use_synthetic_data=cfg.use_synthetic_data,
                 use_label_singular=use_label_singular,
                 stats=_stats,
-                lr_scheduler=warmup_scheduler,
+                lr_scheduler=scheduler,
             )
-            if cfg.total_steps_to_run is not None:
-                break
+            # if cfg.total_steps_to_run is not None:
+            #     break
 
             if cfg.run_validation:
                 if rank == 0:
@@ -846,6 +856,10 @@ def fsdp_main():
                         use_label_singular=use_label_singular,
                         metric_logger=_metric_logger,
                     )
+            
+            if _stats:
+                with open("results/vitsmart_90M_adamw.json", "w") as f:
+                    json.dump(dict(_stats), f)
         # print(f"rank {local_rank} in front of barrier...")
         # dist.barrier()
         # print(f"rank {local_rank} past barrier...")

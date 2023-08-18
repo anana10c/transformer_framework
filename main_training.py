@@ -5,7 +5,7 @@ import time
 from typing import Dict, Tuple
 
 import colorama
-import torch
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -201,15 +201,23 @@ def fsdp_main():
     if torch.distributed.is_initialized():
         torch.cuda.set_device(local_rank)
 
+    # torch.cuda.memory._record_memory_history(True,
+    #     # keep 100,000 alloc/free events from before the snapshot
+    #     trace_alloc_max_entries=100000,
+
+    #     # record stack information for the trace events
+    #     trace_alloc_record_context=True)
+
     from functools import partial
 
     _zero_print = partial(zero_print, local_rank)
 
     # setup memory tracking for perf
-    if local_rank == 0:
-        memmax = performance.Memory_Maximizer()
-    else:
-        memmax = None
+    # if local_rank == 0:
+    #     memmax = performance.Memory_Maximizer()
+    # else:
+    #     memmax = None
+    memmax = performance.Memory_Maximizer()
 
     # ====   use new transformer wrapper
 
@@ -538,7 +546,7 @@ def fsdp_main():
             sharding_strategy=cfg.sharding_strategy,
             device_id=torch.cuda.current_device(),
             forward_prefetch=cfg.forward_prefetch,
-            limit_all_gathers=False,
+            limit_all_gathers=True,
             param_init_fn=my_init_fn,
             # sync_module_states=True
         )
@@ -591,12 +599,14 @@ def fsdp_main():
         )
 
     # memory and timing tracking
-    if local_rank == 0:
-        memmax.start()
-        # torch.cuda.reset_peak_memory_stats()
-        tracking_duration = []
-    else:
-        tracking_duration = None
+    # if local_rank == 0:
+    #     memmax.start()
+    #     # torch.cuda.reset_peak_memory_stats()
+    #     tracking_duration = []
+    # else:
+    #     tracking_duration = None
+    memmax.start()
+    tracking_duration = []
 
     # warmup, this is only used in the non-recursive ParamExecOrderPolicy
     """config.train(
@@ -641,7 +651,7 @@ def fsdp_main():
     # optimizer ----------
     optimizer = None
     lr = 1e-3
-    weight_decay = 1e-4
+    weight_decay = 0.1
 
     if cfg.optimizer == "int8":
         import bitsandbytes as bnb
@@ -718,9 +728,9 @@ def fsdp_main():
             betas=(0.9, 0.999),
             epsilon=1e-12,
             weight_decay=weight_decay,
-            max_preconditioner_dim=1024,
+            max_preconditioner_dim=8192,
             # start_preconditioning_step=100,
-            precondition_frequency=1,
+            precondition_frequency=100,
             use_decoupled_weight_decay=True,
             grafting_type=GraftingType.ADAM,
             grafting_epsilon=1e-08,
@@ -737,7 +747,8 @@ def fsdp_main():
                 print(f"WARNING! using DDP Shampoo with FSDP!")
     elif cfg.optimizer == "fsdp_shampoo":
         from distributed_shampoo.fsdp_shampoo import FSDPShampoo
-        from distributed_shampoo.shampoo_utils import GraftingType, LargeDimMethod
+        from distributed_shampoo.shampoo_utils import GraftingType
+        from distributed_shampoo.shampoo_fsdp_utils import TensorBlockRecoveryMethod
 
         optimizer = FSDPShampoo(
             model.parameters(),
@@ -746,9 +757,11 @@ def fsdp_main():
             betas=(0.9, 0.999),
             epsilon=1e-12,
             weight_decay=weight_decay,
-            max_preconditioner_dim=1024,
-            # start_preconditioning_step=100,
+            max_preconditioner_dim=8192,
+            # start_preconditioning_step=100000000,
             precondition_frequency=1,
+            # exponent_override=2,
+            # exponent_multiplier=1,
             use_decoupled_weight_decay=True,
             grafting_type=GraftingType.ADAM,
             grafting_epsilon=1e-08,
@@ -756,6 +769,8 @@ def fsdp_main():
             # num_trainers_per_group=1,
             use_dtensor=False,
             # debug_mode=True
+            tensor_block_recovery=TensorBlockRecoveryMethod.SPLIT,
+            dist_group=model.process_group,
         )
         if rank == 0:
             print(
@@ -770,9 +785,15 @@ def fsdp_main():
     from torch.optim.lr_scheduler import LinearLR, SequentialLR, ConstantLR, CosineAnnealingLR
 
     # warmup_scheduler = LinearLR(optimizer, start_factor=0.1, total_iters=50)
-    warmup_scheduler = ConstantLR(optimizer, factor=1.0, total_iters=10000)
-    cosine_scheduler = CosineAnnealingLR(optimizer, T_max=375341)
-    scheduler = SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], milestones=[10000])
+    warmup_steps = 10000
+    warmup_scheduler = LinearLR(optimizer, start_factor=1/warmup_steps, total_iters=warmup_steps-1)
+    print(len(data_loader), cfg.batch_size_training, dist.get_world_size(), cfg.num_epochs, np.ceil(len(data_loader) * cfg.num_epochs) - warmup_steps)
+    # cosine_scheduler = CosineAnnealingLR(optimizer, T_max = np.ceil(len(data_loader) * cfg.num_epochs) - warmup_steps)
+    cosine_scheduler = CosineAnnealingLR(optimizer, T_max = np.ceil(len(data_loader) * 60) - warmup_steps, eta_min=1e-10)
+    constant_scheduler = ConstantLR(optimizer, factor=1e-10/lr, total_iters=10000000)
+    # scheduler = SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], milestones=[warmup_steps])
+    scheduler = SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler, constant_scheduler], milestones=[warmup_steps, np.ceil(len(data_loader) * 60)])
+    # scheduler = warmup_scheduler
     # (optimizer, start_factor=0.3333333333333333, end_factor=1.0, total_iters=5, last_epoch=- 1, verbose=False)
 
     # start adding in logged metrics...
@@ -807,7 +828,7 @@ def fsdp_main():
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(
                     cfg.profile_folder
                 ),
-                profile_memory=True,
+                profile_memory=False,
                 with_stack=False,
                 record_shapes=False,
             ) as torch_profiler:
@@ -858,7 +879,7 @@ def fsdp_main():
                     )
             
             if _stats:
-                with open("results/vitsmart_90M_adamw.json", "w") as f:
+                with open("results/test.json", "w") as f:
                     json.dump(dict(_stats), f)
         # print(f"rank {local_rank} in front of barrier...")
         # dist.barrier()
@@ -883,9 +904,10 @@ def fsdp_main():
 
     # memory summary
     print(f"** exit loop - rank {local_rank} reporting....")
+    memmax.stop()
     if local_rank == 0:
         # memory monitor
-        memmax.stop()  # stop and display info
+        # memmax.stop()  # stop and display info
         # print(f"{tracking_duration=}, {cfg.total_steps_to_run=}")
         if _stats:
             total_loss_curve = _stats["loss"]
@@ -963,10 +985,10 @@ def fsdp_main():
         print(f"Batch size used = {cfg.batch_size_training}\n")
 
         print(Fore.LIGHTBLUE_EX + f"\n--> Model Size =  {num_params} M Params\n")
-        if cfg.print_memory_summary:
-            print(
-                f"\nCUDA Memory Summary After Training:\n {torch.cuda.memory_summary()}"
-            )
+    if cfg.print_memory_summary:
+        print(
+            f"\nCUDA Memory Summary After Training (rank {dist.get_rank()}):\n {torch.cuda.memory_summary()}"
+        )
 
     cleanup()
 

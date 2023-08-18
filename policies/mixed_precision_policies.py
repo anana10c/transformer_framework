@@ -19,6 +19,7 @@ bf16_policy = MixedPrecision(
     reduce_dtype=torch.bfloat16,
     # Buffer precision.
     buffer_dtype=torch.bfloat16,
+    # keep_low_precision_grads=True,
 )
 
 bf16_grads_policy = MixedPrecision(
@@ -31,5 +32,5 @@ fp32_policy = MixedPrecision(
     param_dtype=torch.float32,
     reduce_dtype=torch.float32,
     buffer_dtype=torch.float32,
-    cast_root_forward_inputs=False
+    # cast_root_forward_inputs=False
 )

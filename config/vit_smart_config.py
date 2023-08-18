@@ -1,8 +1,10 @@
 import time
 from dataclasses import dataclass
+import numpy as np
 from typing import Tuple, Optional
 from torch import Tensor
 import os
+import pickle
 
 import torch
 import torchvision
@@ -28,8 +30,8 @@ NUM_CLASSES = 1000  # default to imagenet, updates in dataset selection
 class train_config(base_config):
     # training - set total_steps = None to run epochs,
     #  otherwise step count is used and breaks.
-    total_steps_to_run: int = None
-    num_epochs: int = 300
+    total_steps_to_run: int = 4
+    num_epochs: int = 1
 
     # Framework to run - DDP or FSDP.
     # DDP = False means using FSDP.
@@ -41,6 +43,7 @@ class train_config(base_config):
         # "vit_relpos_medium_patch16_rpn_224"  #
         # "vit_relpos_base_patch16_rpn_224"
         # "maxxvitv2_rmlp_base_rw_224"
+        # "S/16"
         "smartvit90"
         # "631M"
         # "1B"
@@ -77,7 +80,6 @@ class train_config(base_config):
     val_batch_size = 32
 
     fsdp_activation_checkpointing: bool = False
-
     # use synthetic data
     use_synthetic_data: bool = False
     use_label_singular = False
@@ -130,7 +132,7 @@ class train_config(base_config):
     layernorm_eps = 1e-6
 
     # optimizers load and save
-    optimizer = "AdamW"
+    optimizer = "fsdp_shampoo"
     use_fused_optimizer = True
 
     save_optimizer: bool = False
@@ -153,7 +155,17 @@ def build_model(
     print(f"{local_cfg.NUM_CLASSES=}")
     NUM_CLASSES = local_cfg.NUM_CLASSES
 
-    if model_size == "smartvit90":
+    if model_size == "S/16":
+        model_args = {
+            "patch_size": 14,
+            "embed_dim": 384,
+            "mlp_ratio": 4.,
+            "depth": 12,
+            "num_heads": 6,
+            "num_classes": NUM_CLASSES,
+            "image_size": 224,
+        }
+    elif model_size == "smartvit90":
         model_args = {
             "patch_size": 14,
             "embed_dim": 1024,
@@ -345,6 +357,32 @@ def fsdp_checkpointing(model):
     # return fsdp_checkpointing_base(model, ViTEncoderBlock)
 
 
+def one_hot(x, num_classes, on_value=1., off_value=0.):
+    x = x.long().view(-1, 1)
+    return torch.full((x.size()[0], num_classes), off_value, device=x.device).scatter_(1, x, on_value)
+
+
+def mixup(inputs, targets, alpha=1.0, smoothing=0.0, num_classes=1000):
+    if alpha < 0:
+        raise ValueError("mixup alpha < 0")
+    elif alpha == 0:
+        return inputs, targets
+    else:
+        lam = np.random.beta(alpha, alpha)
+
+    inputs_flipped = inputs.flip(0).mul_(1. - lam)
+    inputs.mul_(lam).add_(inputs_flipped)
+
+    off_value = smoothing / num_classes
+    on_value = 1. - smoothing + off_value
+    y1 = one_hot(targets, num_classes, on_value=on_value, off_value=off_value)
+    y2 = one_hot(targets.flip(0), num_classes, on_value=on_value, off_value=off_value)
+    targets = y1 * lam + y2 * (1. - lam)
+    # targets = targets * lam + targets.flip(0) * (1. - lam)
+    
+    return inputs, targets
+
+
 def train(
     model,
     data_loader,
@@ -384,39 +422,60 @@ def train(
             targets.to(torch.cuda.current_device()), -1
         )
 
+        inputs, targets = mixup(inputs, targets, alpha=0.2)
+
         if optimizer:
             optimizer.zero_grad()
 
-        t0 = time.perf_counter()
+        # t0 = time.perf_counter()
+        t0 = torch.cuda.Event(enable_timing=True)
+        t_mini_batch = torch.cuda.Event(enable_timing=True)
+        t_total_batch = torch.cuda.Event(enable_timing=True)
+
+        t0.record()
         outputs = model(inputs)
         loss = loss_function(outputs, targets)
         loss.backward()
-        mini_batch_time = time.perf_counter() - t0
+        # mini_batch_time = time.perf_counter() - t0
+        t_mini_batch.record()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        # torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        model.clip_grad_norm_(1.0)
 
         if optimizer:
             optimizer.step()
         if lr_scheduler:
             lr_scheduler.step()
 
-        total_batch_time = time.perf_counter() - t0
+        # total_batch_time = time.perf_counter() - t0
+        t_total_batch.record()
+
+        torch.cuda.synchronize()
+        mini_batch_time = t0.elapsed_time(t_mini_batch)
+        total_batch_time = t0.elapsed_time(t_total_batch)
 
         # update durations and memory tracking
         if stats:
             stats["training_loss"].append(loss.item())
             stats["training_iter_time"].append(mini_batch_time)
             stats["training_iter_time_opt"].append(total_batch_time)
-
+            # print(lr_scheduler.get_last_lr()[0])
+            stats["lr"].append(lr_scheduler.get_last_lr()[0])
+        
         if local_rank == 0:
             tracking_duration.append(mini_batch_time)
             if memmax:
                 memmax.update()
+        
+        # if local_rank == 6 or local_rank == 7:
+        #     snapshot = torch.cuda.memory._snapshot()
+        #     with open(f"snapshot_rank{local_rank}.pickle", "wb") as f:
+        #         pickle.dump(snapshot, f)
 
-        # if batch_index % cfg.log_every == 0 and torch.distributed.get_rank() == 0:
-        #     print(
-        #         f"step: {batch_index}: time taken for the last {cfg.log_every} steps is {mini_batch_time:.4f}, including opt {total_batch_time:4f}, loss is {loss}"
-        #     )
+        if batch_index % cfg.log_every == 0 and torch.distributed.get_rank() == 0:
+            print(
+                f"step: {batch_index}: time taken for the last {cfg.log_every} steps is {mini_batch_time:.4f}, including opt {total_batch_time:4f}, loss is {loss}"
+            )
 
         if torch_profiler is not None:
             torch_profiler.step()
@@ -486,8 +545,8 @@ def validation(
             # loss = f"{epoch_val_loss:.4f}"
             # acc = f"{epoch_val_accuracy:.4f}"
             # float_acc = float(acc)
-            loss = loss.item()
-            acc = acc.item()
+            loss = epoch_val_loss.item()
+            acc = epoch_val_accuracy.item()
             stats["best_accuracy"] = max(acc, stats["best_accuracy"])
             best_acc = stats["best_accuracy"]
             stats["loss"].append(loss)
